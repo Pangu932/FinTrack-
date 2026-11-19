@@ -1,14 +1,23 @@
 const express = require('express');
-const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const db = require('./db');
+const createAuth = require('./auth');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
 app.use(express.json({ limit: '2mb' }));
+app.use('/api', (req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
+
+const auth = createAuth(db);
+app.use('/api/auth', auth.router);
+app.use('/api', auth.requireAuth);
 
 // ---------- helpers ----------
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -40,16 +49,16 @@ const wrap = (fn) => (req, res) => {
 
 // ---------- transactions ----------
 app.get('/api/transactions', (req, res) => {
-  const rows = db.prepare('SELECT * FROM transactions ORDER BY date DESC, id DESC').all();
+  const rows = db.prepare('SELECT * FROM transactions WHERE user_id = ? ORDER BY date DESC, id DESC').all(req.user.id);
   res.json(rows);
 });
 
 app.post('/api/transactions', wrap((req, res) => {
   const t = cleanTransaction(req.body);
   const info = db
-    .prepare('INSERT INTO transactions (type, amount, category, note, date) VALUES (@type, @amount, @category, @note, @date)')
-    .run(t);
-  res.status(201).json(db.prepare('SELECT * FROM transactions WHERE id = ?').get(info.lastInsertRowid));
+    .prepare('INSERT INTO transactions (user_id, type, amount, category, note, date) VALUES (@userId, @type, @amount, @category, @note, @date)')
+    .run({ ...t, userId: req.user.id });
+  res.status(201).json(db.prepare('SELECT * FROM transactions WHERE id = ? AND user_id = ?').get(info.lastInsertRowid, req.user.id));
 }));
 
 // Used by CSV import: all rows are inserted together or not at all
@@ -62,29 +71,29 @@ app.post('/api/transactions/bulk', wrap((req, res) => {
       throw new Error(`Row ${i + 1}: ${e.message}`);
     }
   });
-  const insert = db.prepare('INSERT INTO transactions (type, amount, category, note, date) VALUES (@type, @amount, @category, @note, @date)');
-  db.transaction((rows) => rows.forEach((r) => insert.run(r)))(cleaned);
+  const insert = db.prepare('INSERT INTO transactions (user_id, type, amount, category, note, date) VALUES (@userId, @type, @amount, @category, @note, @date)');
+  db.transaction((rows) => rows.forEach((r) => insert.run({ ...r, userId: req.user.id })))(cleaned);
   res.status(201).json({ imported: cleaned.length });
 }));
 
 app.put('/api/transactions/:id', wrap((req, res) => {
   const t = cleanTransaction(req.body);
   const info = db
-    .prepare('UPDATE transactions SET type=@type, amount=@amount, category=@category, note=@note, date=@date WHERE id=@id')
-    .run({ ...t, id: req.params.id });
+    .prepare('UPDATE transactions SET type=@type, amount=@amount, category=@category, note=@note, date=@date WHERE id=@id AND user_id=@userId')
+    .run({ ...t, id: req.params.id, userId: req.user.id });
   if (!info.changes) return res.status(404).json({ error: 'Transaction not found' });
-  res.json(db.prepare('SELECT * FROM transactions WHERE id = ?').get(req.params.id));
+  res.json(db.prepare('SELECT * FROM transactions WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id));
 }));
 
 app.delete('/api/transactions/:id', (req, res) => {
-  const info = db.prepare('DELETE FROM transactions WHERE id = ?').run(req.params.id);
+  const info = db.prepare('DELETE FROM transactions WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
   if (!info.changes) return res.status(404).json({ error: 'Transaction not found' });
   res.status(204).end();
 });
 
 // ---------- budgets ----------
 app.get('/api/budgets', (req, res) => {
-  res.json(db.prepare('SELECT category, month, amount FROM budgets').all());
+  res.json(db.prepare('SELECT category, month, amount FROM budgets WHERE user_id = ?').all(req.user.id));
 });
 
 // Upsert: sending amount 0 clears the budget for that category/month
@@ -97,10 +106,11 @@ app.put('/api/budgets', wrap((req, res) => {
   if (!Number.isFinite(amount) || amount < 0) throw new Error('Budget cannot be negative');
 
   if (amount === 0) {
-    db.prepare('DELETE FROM budgets WHERE category = ? AND month = ?').run(category, month);
+    db.prepare('DELETE FROM budgets WHERE category = ? AND month = ? AND user_id = ?').run(category, month, req.user.id);
   } else {
-    db.prepare(`INSERT INTO budgets (category, month, amount) VALUES (?, ?, ?)
-                ON CONFLICT (category, month) DO UPDATE SET amount = excluded.amount`).run(category, month, amount);
+    db.prepare(`INSERT INTO budgets (user_id, category, month, amount) VALUES (?, ?, ?, ?)
+                ON CONFLICT (user_id, category, month) DO UPDATE SET amount = excluded.amount`)
+      .run(req.user.id, category, month, amount);
   }
   res.json({ category, month, amount });
 }));

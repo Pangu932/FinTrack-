@@ -20,8 +20,9 @@ import/export CSV files and see where your money goes through charts.
 4. **Analytics** – income vs. expenses for six months, category breakdown (donut), running spend through the month.
 5. **Filters** – search text, type, category, date range.
 6. **CSV import / export** – validated import (inserted in one DB transaction), export respects current filters.
-7. **Persistence** – everything lives in `server/fintrack.db`; LocalStorage keeps a cached copy so the UI still opens (read-only) if the server is off.
-8. **Responsive** – sidebar on desktop, bottom tab bar on phones, single-column layouts on tablet/mobile.
+7. **Accounts** – email/password sign-up and login, hashed passwords, and account-scoped transactions and budgets.
+8. **Persistence** – everything lives in `server/fintrack.db`; LocalStorage keeps an account-scoped cached copy so the UI still opens (read-only) if the server is off.
+9. **Responsive** – sidebar on desktop, bottom tab bar on phones, single-column layouts on tablet/mobile.
 
 ## Getting started
 
@@ -46,9 +47,9 @@ npm start                # Express serves the API and the built app on http://lo
 ### Render demo deployment
 
 The `render.yaml` blueprint deploys the app as a free Render web service. It is intended for demos only:
-the app has no authentication, and the free service uses an ephemeral filesystem, so anyone can access
-the shared data and SQLite data may be lost when the service restarts or redeploys. Do not store real or
-sensitive financial information. Persistent SQLite storage requires paid Render resources.
+the free service uses an ephemeral filesystem, so accounts and SQLite data may be lost when the service
+restarts or redeploys. Signup uses email and password without email verification or password recovery.
+Do not store real or sensitive financial information. Persistent SQLite storage requires paid Render resources.
 
 > If `better-sqlite3` fails to install on your machine, make sure you're on a current Node LTS release;
 > it ships prebuilt binaries for those. On older versions it needs Python and a C++ build toolchain.
@@ -89,6 +90,10 @@ budgets(id PK, category, month 'YYYY-MM', amount REAL > 0,  UNIQUE(category, mon
 
 | Method | Endpoint                  | Purpose                                   |
 |--------|---------------------------|-------------------------------------------|
+| POST   | `/api/auth/signup`        | create an account and sign in              |
+| POST   | `/api/auth/login`         | sign in                                    |
+| POST   | `/api/auth/logout`        | end the current session                    |
+| GET    | `/api/auth/me`            | get the current account                    |
 | GET    | `/api/transactions`       | list all, newest first                    |
 | POST   | `/api/transactions`       | create one                                |
 | POST   | `/api/transactions/bulk`  | CSV import `{ rows: [...] }` (atomic)     |

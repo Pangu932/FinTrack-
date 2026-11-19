@@ -1,10 +1,12 @@
 import { useEffect, useState, useCallback } from 'react';
-import { api, saveCache, loadCache } from './api.js';
+import { api, saveCache, loadCache, clearCache } from './api.js';
 import { currentMonth } from './utils.js';
 import Dashboard from './components/Dashboard.jsx';
 import Transactions from './components/Transactions.jsx';
 import Budgets from './components/Budgets.jsx';
 import Analytics from './components/Analytics.jsx';
+import Landing from './components/Landing.jsx';
+import AuthPage from './components/AuthPage.jsx';
 
 const TABS = [
   { id: 'dashboard', label: 'Overview' },
@@ -13,7 +15,7 @@ const TABS = [
   { id: 'analytics', label: 'Analytics' },
 ];
 
-export default function App() {
+function FinanceApp({ user }) {
   const [tab, setTab] = useState('dashboard');
   const [month, setMonth] = useState(currentMonth());
   const [transactions, setTransactions] = useState([]);
@@ -27,11 +29,14 @@ export default function App() {
       const [t, b] = await Promise.all([api.getTransactions(), api.getBudgets()]);
       setTransactions(t);
       setBudgets(b);
-      saveCache({ transactions: t, budgets: b });
+      saveCache(user.id, { transactions: t, budgets: b });
       setOffline(false);
-    } catch {
-      // server is down - fall back to whatever we saved last time
-      const cached = loadCache();
+    } catch (error) {
+      if (error.status === 401) {
+        window.location.replace('/login');
+        return;
+      }
+      const cached = loadCache(user.id);
       if (cached) {
         setTransactions(cached.transactions);
         setBudgets(cached.budgets);
@@ -40,17 +45,26 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [user.id]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
 
-  // little message at the bottom of the screen, disappears on its own
   const notify = (msg) => {
     setToast(msg);
     setTimeout(() => setToast(''), 2600);
   };
+
+  async function logOut() {
+    try {
+      await api.logOut();
+      clearCache(user.id);
+      window.location.assign('/');
+    } catch {
+      notify('Could not sign out. Check your connection and try again.');
+    }
+  }
 
   const shared = { transactions, budgets, month, setMonth, refresh, notify, offline };
 
@@ -61,20 +75,24 @@ export default function App() {
           <span className="brand-mark">F</span>
           <span className="brand-name">FinTrack</span>
         </div>
-        <nav>
+        <nav aria-label="Main navigation">
           {TABS.map((t) => (
             <button key={t.id} className={'nav-item' + (tab === t.id ? ' active' : '')} onClick={() => setTab(t.id)}>
               {t.label}
             </button>
           ))}
         </nav>
-        <p className="sidebar-note">Your data is saved in a local SQLite database.</p>
+        <div className="sidebar-account">
+          <span className="account-email">{user.email}</span>
+          <button className="nav-item signout" onClick={logOut}>Sign out</button>
+          <p className="sidebar-note">Demo account — records may be reset at any time.</p>
+        </div>
       </aside>
 
       <main className="content">
         {offline && (
           <div className="banner">
-            Can't reach the server, so you're looking at the last saved copy. Start it with <code>npm run dev</code> to make changes.
+            Can’t reach the server, so you’re looking at the last saved copy. Start it with <code>npm run dev</code> to make changes.
           </div>
         )}
         {loading ? (
@@ -89,7 +107,38 @@ export default function App() {
         )}
       </main>
 
-      {toast && <div className="toast">{toast}</div>}
+      {toast && <div className="toast" role="status">{toast}</div>}
     </div>
   );
+}
+
+function ProtectedApp() {
+  const [user, setUser] = useState(null);
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    api.getCurrentUser()
+      .then((currentUser) => {
+        if (active) setUser(currentUser);
+      })
+      .catch(() => {
+        if (active) window.location.replace('/login');
+      })
+      .finally(() => {
+        if (active) setChecking(false);
+      });
+    return () => { active = false; };
+  }, []);
+
+  if (checking || !user) return <main className="auth-page"><p className="muted">Checking your account…</p></main>;
+  return <FinanceApp user={user} />;
+}
+
+export default function App() {
+  const path = window.location.pathname.replace(/\/+$/, '') || '/';
+  if (path === '/login') return <AuthPage mode="login" />;
+  if (path === '/signup') return <AuthPage mode="signup" />;
+  if (path === '/app') return <ProtectedApp />;
+  return <Landing />;
 }
